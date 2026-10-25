@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Solubility predictor</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://api.fontshare.com/v2/css?f[]=switzer@400,500,600,700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,500;6..72,600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <div class="page">
+    <header class="masthead">
+      <p class="eyebrow">Delaney solubility set · {{ summary.rows }} molecules</p>
+      <h1>Solubility predictor</h1>
+      <p class="lede">
+        Estimate how well a molecule dissolves in water. The page trains the same
+        linear regression and random forest as the notebook, then predicts logS
+        from four descriptors.
+      </p>
+    </header>
+
+    <div class="workspace">
+      <form id="predict-form" class="card">
+        <div class="card-head">
+          <h2>Descriptors</h2>
+          <p>Values are the inputs the models saw during training.</p>
+        </div>
+
+        <label>
+          <span class="label-row">
+            <span>MolLogP</span>
+            <span class="hint">Lipophilicity</span>
+          </span>
+          <input name="MolLogP" type="number" step="any" inputmode="decimal" required placeholder="2.45" aria-describedby="help-logp">
+          <small id="help-logp">Higher means the molecule prefers oil over water. Dataset range {{ summary.ranges.MolLogP.min }} to {{ summary.ranges.MolLogP.max }}.</small>
+        </label>
+
+        <label>
+          <span class="label-row">
+            <span>MolWt</span>
+            <span class="hint">g/mol</span>
+          </span>
+          <input name="MolWt" type="number" step="any" inputmode="decimal" min="10" required placeholder="180" aria-describedby="help-wt">
+          <small id="help-wt">Molecular weight. Dataset range {{ summary.ranges.MolWt.min }} to {{ summary.ranges.MolWt.max }}.</small>
+        </label>
+
+        <label>
+          <span class="label-row">
+            <span>NumRotatableBonds</span>
+            <span class="hint">Count</span>
+          </span>
+          <input name="NumRotatableBonds" type="number" step="any" inputmode="decimal" min="0" required placeholder="2" aria-describedby="help-rot">
+          <small id="help-rot">Bonds that can rotate. Dataset range {{ summary.ranges.NumRotatableBonds.min }} to {{ summary.ranges.NumRotatableBonds.max }}.</small>
+        </label>
+
+        <label>
+          <span class="label-row">
+            <span>AromaticProportion</span>
+            <span class="hint">0 to 1</span>
+          </span>
+          <input name="AromaticProportion" type="number" step="any" inputmode="decimal" min="0" max="1" required placeholder="0.4" aria-describedby="help-arom">
+          <small id="help-arom">Share of heavy atoms sitting in aromatic rings. Dataset range {{ summary.ranges.AromaticProportion.min }} to {{ summary.ranges.AromaticProportion.max }}.</small>
+        </label>
+
+        <div class="examples">
+          <span>Try a real molecule from the set</span>
+          <div class="chips" id="example-chips"></div>
+        </div>
+
+        <button class="primary" type="submit">Predict logS</button>
+        <p id="form-error" class="error" hidden></p>
+      </form>
+
+      <section class="card results" aria-live="polite">
+        <div class="card-head">
+          <h2>Prediction</h2>
+          <p>logS is the base-10 log of solubility in mol/L. Closer to zero is more soluble.</p>
+        </div>
+
+        <p class="empty" id="empty-state">Enter descriptors, or pick an example, then predict.</p>
+
+        <div id="result-body" hidden>
+          <div class="prediction-grid">
+            <article class="prediction" id="linear-card">
+              <p class="method"><span class="swatch linear"></span>Linear regression</p>
+              <p class="value"><span id="linear-value">—</span> <span class="unit">logS</span></p>
+              <p class="badge" id="linear-label"></p>
+            </article>
+            <article class="prediction" id="forest-card">
+              <p class="method"><span class="swatch forest"></span>Random forest</p>
+              <p class="value"><span id="forest-value">—</span> <span class="unit">logS</span></p>
+              <p class="badge" id="forest-label"></p>
+            </article>
+          </div>
+
+          <div class="scale" aria-hidden="true">
+            <div class="scale-track">
+              <span class="marker linear" id="marker-linear"></span>
+              <span class="marker forest" id="marker-forest"></span>
+            </div>
+            <div class="scale-labels">
+              <span>Poorly soluble</span>
+              <span>Very soluble</span>
+            </div>
+          </div>
+
+          <p class="reference" id="reference" hidden></p>
+          <p class="note" id="result-note"></p>
+        </div>
+      </section>
+    </div>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>How the models scored</h2>
+        <p>
+          {{ summary.train }} molecules for training and {{ summary.test }} held out for testing.
+          Same split as the notebook: 20% test, random_state 100.
+          Lower MSE is better. R² closer to 1 is better.
+        </p>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th>Training MSE</th>
+              <th>Training R²</th>
+              <th>Test MSE</th>
+              <th>Test R²</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in summary.metrics %}
+            <tr {% if row.method == summary.better %}class="best"{% endif %}>
+              <td>
+                {{ row.method }}
+                {% if row.method == summary.better %}<span class="pill">Higher test R²</span>{% endif %}
+              </td>
+              <td>{{ row.train_mse }}</td>
+              <td>{{ row.train_r2 }}</td>
+              <td>{{ row.test_mse }}</td>
+              <td>{{ row.test_r2 }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card chart-card">
+      <div class="card-head chart-head">
+        <div>
+          <h2>Test set: predicted vs measured</h2>
+          <p>Each dot is a held-out molecule. The dashed line is a perfect prediction.</p>
+        </div>
+        <div class="toggle" role="group" aria-label="Chart model">
+          <button type="button" class="active" data-model="linear" aria-pressed="true">Linear regression</button>
+          <button type="button" data-model="forest" aria-pressed="false">Random forest</button>
+        </div>
+      </div>
+      <canvas id="chart" width="880" height="420" aria-label="Scatter plot of predicted logS against experimental logS"></canvas>
+    </section>
+  </div>
+
+  <script id="examples-data" type="application/json">{{ summary.examples | tojson }}</script>
+  <script id="chart-data" type="application/json">{{ chart | tojson }}</script>
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
